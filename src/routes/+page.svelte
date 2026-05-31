@@ -28,6 +28,21 @@
   let loaded = $state(false);
   let confirm = $state<{ job: Job; action: Action } | null>(null);
 
+  // Paleta de comandos (⌘K)
+  let palette = $state(false);
+  let paletteQuery = $state("");
+  let paletteIndex = $state(0);
+  let paletteInput = $state<HTMLInputElement | null>(null);
+  const paletteResults = $derived.by(() => {
+    const q = paletteQuery.trim().toLowerCase();
+    const base = q
+      ? jobs.filter(
+          (j) => j.name.toLowerCase().includes(q) || j.description.toLowerCase().includes(q),
+        )
+      : jobs;
+    return base.slice(0, 8);
+  });
+
   // Painel de detalhe
   let selectedId = $state<string | null>(null);
   let detail = $state<JobDetail | null>(null);
@@ -189,6 +204,12 @@
   // Push do backend: `jobs` (mudança de estado) e `metrics` (CPU/mem a cada 2s).
   let unlisten: UnlistenFn[] = [];
   onMount(async () => {
+    // Restaura preferências persistidas.
+    const sf = localStorage.getItem("maestro:filter");
+    if (sf === "all" || sf === "failed" || sf === "active" || sf === "scheduled") filter = sf;
+    const ss = localStorage.getItem("maestro:sort");
+    if (ss === "health" || ss === "activity") sort = ss;
+
     await reload();
     unlisten.push(
       await listen<Job[]>("jobs", (e) => {
@@ -216,10 +237,50 @@
     stopFollow();
   });
 
-  function onEscape() {
-    if (confirm) confirm = null;
-    else if (selectedId) closeDetail();
+  function openPalette() {
+    palette = true;
+    paletteQuery = "";
+    paletteIndex = 0;
+    setTimeout(() => paletteInput?.focus(), 0);
   }
+
+  function onKey(e: KeyboardEvent) {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      palette ? (palette = false) : openPalette();
+      return;
+    }
+    if (e.key === "Escape") {
+      if (palette) palette = false;
+      else if (confirm) confirm = null;
+      else if (selectedId) closeDetail();
+      return;
+    }
+    if (palette) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        paletteIndex = Math.min(paletteIndex + 1, paletteResults.length - 1);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        paletteIndex = Math.max(paletteIndex - 1, 0);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        const r = paletteResults[paletteIndex];
+        if (r) {
+          palette = false;
+          openDetail(r);
+        }
+      }
+    }
+  }
+
+  // Persistência das preferências de UI (filtro e ordenação).
+  $effect(() => {
+    localStorage.setItem("maestro:filter", filter);
+  });
+  $effect(() => {
+    localStorage.setItem("maestro:sort", sort);
+  });
 </script>
 
 <div class="app">
@@ -238,6 +299,7 @@
 
   <div class="toolbar">
     <input class="search" placeholder="Buscar serviço…" bind:value={query} />
+    <button class="kbd-btn" onclick={openPalette} title="Paleta de comandos (⌘K)">⌘K</button>
     <div class="chips">
       {#each [["all", "Todos"], ["failed", "Falhas"], ["active", "Ativos"], ["scheduled", "Agendados"]] as [key, label]}
         <button class="chip" class:on={filter === key} onclick={() => (filter = key as typeof filter)}>
@@ -327,7 +389,43 @@
   </main>
 </div>
 
-<svelte:window onkeydown={(e) => e.key === "Escape" && onEscape()} />
+<svelte:window onkeydown={onKey} />
+
+{#if palette}
+  <div class="overlay top" onclick={() => (palette = false)} role="presentation">
+    <div class="palette" onclick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" tabindex="-1">
+      <input
+        bind:this={paletteInput}
+        bind:value={paletteQuery}
+        class="palette-input"
+        placeholder="Pular para um serviço…"
+        oninput={() => (paletteIndex = 0)}
+      />
+      <ul class="palette-list">
+        {#each paletteResults as r, i (r.id)}
+          <li>
+            <button
+              class="palette-item"
+              class:on={i === paletteIndex}
+              onmouseenter={() => (paletteIndex = i)}
+              onclick={() => {
+                palette = false;
+                openDetail(r);
+              }}
+            >
+              <span class="dot {r.health}"></span>
+              <span class="pname">{r.name}</span>
+              <span class="pstate {r.state}">{r.state}</span>
+            </button>
+          </li>
+        {:else}
+          <li class="palette-empty">Nenhum serviço.</li>
+        {/each}
+      </ul>
+      <div class="palette-foot">↑↓ navegar · ↵ abrir · esc fechar</div>
+    </div>
+  </div>
+{/if}
 
 {#if selected}
   <div class="drawer-backdrop" onclick={closeDetail} role="presentation"></div>
@@ -671,6 +769,102 @@
       opacity: 0;
       transform: scale(0.96);
     }
+  }
+
+  .kbd-btn {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--text-faint);
+    padding: 9px 11px;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .kbd-btn:hover {
+    color: var(--text);
+    border-color: var(--line-strong);
+  }
+
+  /* --- Paleta de comandos --- */
+  .overlay.top {
+    align-items: flex-start;
+    padding-top: 12vh;
+  }
+  .palette {
+    width: 560px;
+    max-width: calc(100vw - 40px);
+    background: var(--panel);
+    border: 1px solid var(--line-strong);
+    border-radius: 14px;
+    box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+    overflow: hidden;
+    animation: pop 0.13s ease;
+  }
+  .palette-input {
+    width: 100%;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--line);
+    color: var(--text);
+    padding: 15px 18px;
+    font-size: 14px;
+    outline: none;
+  }
+  .palette-list {
+    list-style: none;
+    margin: 0;
+    padding: 6px;
+    max-height: 360px;
+    overflow-y: auto;
+  }
+  .palette-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    padding: 9px 12px;
+    cursor: pointer;
+    text-align: left;
+    color: var(--text);
+  }
+  .palette-item.on {
+    background: var(--panel-2);
+  }
+  .pname {
+    flex: 1;
+    font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pstate {
+    font-size: 11px;
+    color: var(--text-faint);
+    text-transform: capitalize;
+  }
+  .pstate.active {
+    color: var(--ok);
+  }
+  .pstate.failed {
+    color: var(--fail);
+  }
+  .palette-empty {
+    padding: 20px;
+    text-align: center;
+    color: var(--text-faint);
+    font-size: 13px;
+  }
+  .palette-foot {
+    padding: 9px 16px;
+    border-top: 1px solid var(--line);
+    font-size: 11px;
+    color: var(--text-faint);
   }
 
   /* --- Drawer de detalhe --- */
