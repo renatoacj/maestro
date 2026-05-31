@@ -3,13 +3,16 @@
   import {
     listJobs,
     controlJob,
+    jobMetrics,
     type Job,
     type Action,
     type Health,
+    type Resources,
   } from "$lib/api";
-  import { relativeTime } from "$lib/format";
+  import { relativeTime, formatCpu, formatBytes } from "$lib/format";
 
   let jobs = $state<Job[]>([]);
+  let metrics = $state<Record<string, Resources>>({});
   let error = $state<string | null>(null);
   let query = $state("");
   let filter = $state<"all" | "failed" | "active" | "scheduled">("all");
@@ -42,11 +45,30 @@
     try {
       jobs = await listJobs();
       error = null;
+      void refreshMetrics();
     } catch (e) {
       error = String(e);
     } finally {
       loaded = true;
     }
+  }
+
+  // Métricas (CPU/memória) só fazem sentido para jobs ativos. Buscadas em
+  // paralelo; o CPU% precisa de duas amostras, então aparece a partir do 2º ciclo.
+  async function refreshMetrics() {
+    const active = jobs.filter((j) => j.state === "active");
+    const entries = await Promise.all(
+      active.map(async (j) => {
+        try {
+          return [j.id, await jobMetrics(j.id)] as const;
+        } catch {
+          return [j.id, null] as const;
+        }
+      }),
+    );
+    const next: Record<string, Resources> = {};
+    for (const [id, r] of entries) if (r) next[id] = r;
+    metrics = next;
   }
 
   async function act(job: Job, action: Action) {
@@ -125,6 +147,13 @@
                   </span>
                 {/if}
               </div>
+            </div>
+
+            <div class="metrics">
+              {#if metrics[job.id]}
+                <span class="m"><b>{formatCpu(metrics[job.id].cpuPct)}</b><i>cpu</i></span>
+                <span class="m"><b>{formatBytes(metrics[job.id].memBytes)}</b><i>mem</i></span>
+              {/if}
             </div>
 
             <div class="state {job.state}">{job.state}</div>
@@ -386,6 +415,33 @@
     font-size: 11.5px;
     color: var(--text-faint);
     white-space: nowrap;
+  }
+
+  .metrics {
+    display: flex;
+    gap: 16px;
+    width: 132px;
+    flex-shrink: 0;
+    justify-content: flex-end;
+  }
+  .m {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    line-height: 1.25;
+  }
+  .m b {
+    font-size: 12.5px;
+    font-weight: 560;
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+  }
+  .m i {
+    font-size: 9.5px;
+    font-style: normal;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
   }
 
   .state {

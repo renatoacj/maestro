@@ -4,6 +4,8 @@
 //! Nenhum comando é interpolado em shell: todas as ações são chamadas D-Bus tipadas.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use zbus::zvariant::OwnedObjectPath;
@@ -61,13 +63,35 @@ trait Manager {
 /// Provider de user-services e user-timers do systemd.
 pub struct SystemdUserProvider {
     conn: Connection,
+    /// Última leitura de CPU por unit: (CPUUsageNSec, instante). Usada para
+    /// derivar CPU% a partir do delta entre duas amostras.
+    cpu_cache: Mutex<HashMap<String, (u64, Instant)>>,
 }
 
 impl SystemdUserProvider {
     /// Conecta ao session bus do usuário. Falha se não houver session D-Bus.
     pub async fn connect() -> Result<Self> {
         let conn = Connection::session().await?;
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            cpu_cache: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Deriva CPU% a partir do tempo de CPU acumulado (ns) entre duas amostras.
+    /// A primeira amostra de uma unit retorna `None` (ainda não há delta).
+    /// Pode passar de 100% (soma entre cores) — comportamento esperado, como no `top`.
+    fn compute_cpu_pct(&self, name: &str, nsec_now: u64) -> Option<f32> {
+        let now = Instant::now();
+        let mut cache = self.cpu_cache.lock().unwrap();
+        let prev = cache.insert(name.to_string(), (nsec_now, now));
+        let (nsec_prev, at_prev) = prev?;
+        let elapsed = now.duration_since(at_prev).as_nanos();
+        if elapsed == 0 || nsec_now < nsec_prev {
+            return None;
+        }
+        let pct = (nsec_now - nsec_prev) as f64 / elapsed as f64 * 100.0;
+        Some(pct as f32)
     }
 
     async fn manager(&self) -> Result<ManagerProxy<'_>> {
@@ -93,6 +117,12 @@ impl SystemdUserProvider {
             if let Ok(pid) = proxy.get_property::<u32>("MainPID").await {
                 if pid != 0 {
                     res.pids.push(pid);
+                }
+            }
+            // CPU acumulada em nanossegundos → CPU% via delta entre amostras.
+            if let Ok(nsec) = proxy.get_property::<u64>("CPUUsageNSec").await {
+                if nsec != u64::MAX {
+                    res.cpu_pct = self.compute_cpu_pct(name, nsec);
                 }
             }
         }
@@ -290,5 +320,29 @@ mod tests {
             );
         }
         assert!(!jobs.is_empty(), "deveria haver ao menos uma user-unit");
+    }
+
+    /// Lê CPU/memória de um serviço ativo (duas amostras para obter CPU%).
+    /// `cargo test -- --ignored metrics_live --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn metrics_live() {
+        let provider = SystemdUserProvider::connect().await.unwrap();
+        let jobs = provider.list().await.unwrap();
+        let active = jobs
+            .into_iter()
+            .find(|j| matches!(j.state, JobState::Active) && j.local_id.ends_with(".service"))
+            .expect("precisa de um .service ativo para o teste");
+        eprintln!("medindo: {}", active.local_id);
+
+        let r1 = provider.metrics(&active.local_id).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let r2 = provider.metrics(&active.local_id).await.unwrap();
+
+        eprintln!("1ª amostra: cpu={:?} mem={:?} pids={:?}", r1.cpu_pct, r1.mem_bytes, r1.pids);
+        eprintln!("2ª amostra: cpu={:?} mem={:?} pids={:?}", r2.cpu_pct, r2.mem_bytes, r2.pids);
+        assert!(r2.mem_bytes.is_some(), "memória deveria estar disponível (cgroup v2)");
+        assert!(r1.cpu_pct.is_none(), "1ª amostra não tem delta → CPU None");
+        assert!(r2.cpu_pct.is_some(), "2ª amostra deveria ter CPU% calculado");
     }
 }

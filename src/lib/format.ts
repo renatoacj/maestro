@@ -31,6 +31,12 @@ export function relativeTime(epochSecs: number | null): string {
   return fut ? `em ${n}${label}` : `há ${n}${label}`;
 }
 
+export function formatCpu(pct: number | null | undefined): string {
+  if (pct == null) return "—";
+  if (pct < 0.05) return "0%";
+  return `${pct.toFixed(pct < 10 ? 1 : 0)}%`;
+}
+
 export function formatBytes(bytes: number | null): string {
   if (bytes == null) return "—";
   if (bytes === 0) return "0 B";
