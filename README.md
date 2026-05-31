@@ -24,21 +24,24 @@ Scheduler no Windows) — todos atrás da mesma abstração `JobProvider`.
 
 ## Instalação
 
-### AppImage (qualquer distro Linux)
+Baixe o pacote da sua distro na página de
+[**Releases**](https://github.com/renatoacj/maestro/releases/latest).
 
-Baixe o `Maestro_*.AppImage` da página de [Releases](https://github.com/renatoacj/maestro/releases),
-torne-o executável e rode:
+| Distro | Arquivo | Instalar |
+|---|---|---|
+| **Qualquer distro** | `Maestro_0.1.0_amd64.AppImage` | `chmod +x Maestro_*.AppImage && ./Maestro_*.AppImage` |
+| **Debian / Ubuntu / Mint** | `Maestro_0.1.0_amd64.deb` | `sudo apt install ./Maestro_0.1.0_amd64.deb` |
+| **Fedora / RHEL / openSUSE** | `Maestro-0.1.0-1.x86_64.rpm` | `sudo dnf install ./Maestro-0.1.0-1.x86_64.rpm` |
+| **Arch / CachyOS / Manjaro** | `packaging/PKGBUILD` | `cd packaging && makepkg -si` |
+
+O AppImage é autocontido (não precisa instalar nada). Os pacotes `.deb`/`.rpm`/Arch
+puxam as dependências de runtime automaticamente: `webkit2gtk-4.1`, `gtk3` e
+`libayatana-appindicator` (ícone na bandeja).
+
+Verifique a integridade com o `SHA256SUMS.txt` anexado ao release:
 
 ```bash
-chmod +x Maestro_0.1.0_amd64.AppImage
-./Maestro_0.1.0_amd64.AppImage
-```
-
-### Arch Linux (PKGBUILD)
-
-```bash
-cd packaging
-makepkg -si
+sha256sum -c SHA256SUMS.txt
 ```
 
 ## Desenvolvimento
