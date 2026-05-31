@@ -9,6 +9,14 @@ edition = "2021"
 name = "maestro_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[profile.release]
+opt-level = "s"   # otimiza para tamanho (app é I/O-bound; perda de velocidade desprezível)
+lto = true        # link-time optimization
+codegen-units = 1 # melhor otimização (build mais lento, binário menor/rápido)
+strip = true      # remove símbolos de debug
+# panic = "unwind" (default) mantido de propósito: um panic numa task de
+# background não deve derrubar o app inteiro.
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

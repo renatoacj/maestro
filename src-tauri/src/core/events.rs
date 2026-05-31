@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{stream::select_all, StreamExt};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::core::registry::Registry;
 use crate::model::JobState;
@@ -81,6 +81,15 @@ fn spawn_sampler(registry: Arc<Registry>, app: AppHandle) {
         let mut interval = tokio::time::interval(SAMPLE_EVERY);
         loop {
             interval.tick().await;
+            // Não amostra quando a janela está escondida (bandeja): economiza
+            // CPU e tráfego D-Bus enquanto ninguém está olhando.
+            let visible = app
+                .get_webview_window("main")
+                .and_then(|w| w.is_visible().ok())
+                .unwrap_or(true);
+            if !visible {
+                continue;
+            }
             let jobs = registry.list_all().await;
             let mut map: HashMap<String, crate::model::Resources> = HashMap::new();
             for j in jobs.iter().filter(|j| matches!(j.state, JobState::Active)) {
