@@ -13,9 +13,13 @@
     type JobDetail,
   } from "$lib/api";
   import { relativeTime, formatCpu, formatBytes } from "$lib/format";
+  import Sparkline from "$lib/Sparkline.svelte";
+
+  const HISTORY = 40; // pontos mantidos por job
 
   let jobs = $state<Job[]>([]);
   let metrics = $state<Record<string, Resources>>({});
+  let history = $state<Record<string, { cpu: number[]; mem: number[] }>>({});
   let error = $state<string | null>(null);
   let query = $state("");
   let filter = $state<"all" | "failed" | "active" | "scheduled">("all");
@@ -195,6 +199,15 @@
     unlisten.push(
       await listen<Record<string, Resources>>("metrics", (e) => {
         metrics = e.payload;
+        const h = { ...history };
+        for (const [id, r] of Object.entries(e.payload)) {
+          const prev = h[id] ?? { cpu: [], mem: [] };
+          h[id] = {
+            cpu: [...prev.cpu, r.cpuPct ?? 0].slice(-HISTORY),
+            mem: [...prev.mem, r.memBytes ?? 0].slice(-HISTORY),
+          };
+        }
+        history = h;
       }),
     );
   });
@@ -281,6 +294,9 @@
 
             <div class="metrics">
               {#if metrics[job.id]}
+                {#if (history[job.id]?.cpu.length ?? 0) > 1}
+                  <Sparkline values={history[job.id].cpu} color="var(--accent)" width={44} height={22} />
+                {/if}
                 <span class="m"><b>{formatCpu(metrics[job.id].cpuPct)}</b><i>cpu</i></span>
                 <span class="m"><b>{formatBytes(metrics[job.id].memBytes)}</b><i>mem</i></span>
               {/if}
@@ -361,6 +377,19 @@
           <dd>{formatBytes(metrics[selected.id].memBytes)}</dd>
         {/if}
       </dl>
+
+      {#if selectedId && (history[selectedId]?.cpu.length ?? 0) > 1}
+        <div class="graphs">
+          <div class="graph">
+            <div class="glabel"><span>CPU</span><b>{formatCpu(metrics[selectedId]?.cpuPct)}</b></div>
+            <Sparkline values={history[selectedId].cpu} color="var(--accent)" width={416} height={46} />
+          </div>
+          <div class="graph">
+            <div class="glabel"><span>Memória</span><b>{formatBytes(metrics[selectedId]?.memBytes ?? null)}</b></div>
+            <Sparkline values={history[selectedId].mem} color="var(--ok)" width={416} height={46} />
+          </div>
+        </div>
+      {/if}
 
       <div class="logs-head">
         <h3>Logs</h3>
@@ -744,6 +773,36 @@
     color: var(--fail);
   }
 
+  .graphs {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    margin-bottom: 20px;
+  }
+  .graph {
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 10px 12px;
+  }
+  .glabel {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 4px;
+  }
+  .glabel span {
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+  }
+  .glabel b {
+    font-size: 13px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+
   .logs-head {
     display: flex;
     align-items: center;
@@ -908,8 +967,9 @@
 
   .metrics {
     display: flex;
-    gap: 16px;
-    width: 132px;
+    align-items: center;
+    gap: 14px;
+    width: 188px;
     flex-shrink: 0;
     justify-content: flex-end;
   }
