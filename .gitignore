@@ -1,0 +1,28 @@
+# Rust / Tauri
+/src-tauri/target/
+**/*.rs.bk
+*.pdb
+
+# Node
+node_modules/
+dist/
+build/
+.vite/
+.svelte-kit/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Ferramentas de agente / skills (não fazem parte do Maestro)
+.agents/
+.claude/
+skills-lock.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
