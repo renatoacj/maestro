@@ -405,6 +405,11 @@
   .actions {
     display: flex;
     gap: 5px;
+    /* Largura fixa (4 botões: 4×30 + 3×5 de gap) reservada sempre, para a coluna
+       de estado alinhar entre linhas com nº de ações diferente. */
+    width: 135px;
+    justify-content: flex-end;
+    flex-shrink: 0;
     opacity: 0;
     transition: opacity 0.12s;
   }
