@@ -13,6 +13,12 @@ use crate::core::registry::Registry;
 use crate::provider::systemd::SystemdUserProvider;
 use crate::provider::JobProvider;
 
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    Manager, WindowEvent,
+};
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt()
@@ -33,8 +39,70 @@ pub fn run() {
             ipc::control_job,
             ipc::job_metrics,
         ])
+        .setup(|app| {
+            // Tray é não-fatal: se a libayatana-appindicator não estiver presente,
+            // o app continua funcionando normalmente, apenas sem ícone na bandeja.
+            if let Err(e) = setup_tray(app) {
+                tracing::warn!(error = %e, "tray indisponível (falta libayatana-appindicator?)");
+            }
+            setup_minimize_to_tray(app);
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("erro ao rodar a aplicação Tauri");
+}
+
+/// Traz a janela principal de volta à frente (mostra, desminimiza, foca).
+fn reveal_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+/// Ícone na bandeja do sistema, com menu (Mostrar / Sair) e clique para revelar.
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "Mostrar Maestro", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Sair", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &quit])?;
+
+    TrayIconBuilder::with_id("maestro-tray")
+        .icon(app.default_window_icon().unwrap().clone())
+        .tooltip("Maestro")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => reveal_window(app),
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                reveal_window(tray.app_handle());
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
+/// Ao minimizar, esconde a janela (some da barra de tarefas) — fica só na bandeja.
+fn setup_minimize_to_tray(app: &tauri::App) {
+    if let Some(window) = app.get_webview_window("main") {
+        let w = window.clone();
+        window.on_window_event(move |event| {
+            if let WindowEvent::Resized(_) = event {
+                if w.is_minimized().unwrap_or(false) {
+                    let _ = w.hide();
+                }
+            }
+        });
+    }
 }
 
 /// Monta o registry com cada provider que conseguir inicializar. Provider que

@@ -16,10 +16,36 @@
   let error = $state<string | null>(null);
   let query = $state("");
   let filter = $state<"all" | "failed" | "active" | "scheduled">("all");
+  let sort = $state<"health" | "activity">("health");
   let busy = $state<Set<string>>(new Set());
   let loaded = $state(false);
+  let confirm = $state<{ job: Job; action: Action } | null>(null);
 
   const healthRank: Record<Health, number> = { failed: 0, degraded: 1, ok: 2 };
+  // Ordenação por atividade: ativos no topo, inativos embaixo.
+  const activityRank: Record<string, number> = {
+    active: 0,
+    activating: 1,
+    deactivating: 1,
+    unknown: 2,
+    inactive: 3,
+    failed: 4,
+  };
+
+  // Rótulos e quais ações exigem confirmação (as que EXECUTAM algo).
+  // Parar é imediato de propósito — para você conseguir abortar rápido.
+  const ACTION_LABEL: Record<Action, string> = {
+    start: "Iniciar",
+    stop: "Parar",
+    restart: "Reiniciar",
+    enable: "Habilitar autostart",
+    disable: "Desabilitar autostart",
+    trigger_now: "Disparar agora",
+  };
+  const CONFIRM_ACTIONS: Action[] = ["start", "restart", "trigger_now"];
+
+  const running = (s: Job["state"]) =>
+    s === "active" || s === "activating" || s === "deactivating";
 
   const counts = $derived({
     total: jobs.length,
@@ -38,7 +64,13 @@
           return false;
         return true;
       })
-      .sort((a, b) => healthRank[a.health] - healthRank[b.health] || a.name.localeCompare(b.name)),
+      .sort((a, b) => {
+        const primary =
+          sort === "activity"
+            ? activityRank[a.state] - activityRank[b.state]
+            : healthRank[a.health] - healthRank[b.health];
+        return primary || a.name.localeCompare(b.name);
+      }),
   );
 
   async function refresh() {
@@ -69,6 +101,23 @@
     const next: Record<string, Resources> = {};
     for (const [id, r] of entries) if (r) next[id] = r;
     metrics = next;
+  }
+
+  // Ponto de entrada dos botões: pede confirmação nas ações que executam algo.
+  function request(job: Job, action: Action) {
+    if (CONFIRM_ACTIONS.includes(action)) {
+      confirm = { job, action };
+    } else {
+      act(job, action);
+    }
+  }
+
+  function confirmYes() {
+    if (confirm) {
+      const { job, action } = confirm;
+      confirm = null;
+      act(job, action);
+    }
   }
 
   async function act(job: Job, action: Action) {
@@ -118,6 +167,14 @@
     </div>
   </div>
 
+  <div class="sortbar">
+    <span class="sortlabel">Ordenar:</span>
+    <div class="seg">
+      <button class:on={sort === "health"} onclick={() => (sort = "health")}>Saúde</button>
+      <button class:on={sort === "activity"} onclick={() => (sort = "activity")}>Atividade</button>
+    </div>
+  </div>
+
   {#if error}
     <div class="error">{error}</div>
   {/if}
@@ -159,19 +216,19 @@
             <div class="state {job.state}">{job.state}</div>
 
             <div class="actions">
-              {#if job.state === "active"}
-                <button onclick={() => act(job, "restart")} title="Reiniciar">↻</button>
-                <button class="danger" onclick={() => act(job, "stop")} title="Parar">■</button>
+              {#if running(job.state)}
+                <button onclick={() => request(job, "restart")} title="Reiniciar">↻</button>
+                <button class="danger" onclick={() => request(job, "stop")} title="Parar">■</button>
               {:else}
-                <button class="go" onclick={() => act(job, "start")} title="Iniciar">▶</button>
+                <button class="go" onclick={() => request(job, "start")} title="Iniciar">▶</button>
               {/if}
               {#if job.kind === "scheduled"}
-                <button onclick={() => act(job, "trigger_now")} title="Disparar agora">⚡</button>
+                <button onclick={() => request(job, "trigger_now")} title="Disparar agora">⚡</button>
               {/if}
               {#if job.enabled}
-                <button onclick={() => act(job, "disable")} title="Desabilitar autostart">⦸</button>
+                <button onclick={() => request(job, "disable")} title="Desabilitar autostart">⦸</button>
               {:else}
-                <button onclick={() => act(job, "enable")} title="Habilitar autostart">⦿</button>
+                <button onclick={() => request(job, "enable")} title="Habilitar autostart">⦿</button>
               {/if}
             </div>
           </li>
@@ -180,6 +237,33 @@
     {/if}
   </main>
 </div>
+
+<svelte:window onkeydown={(e) => e.key === "Escape" && (confirm = null)} />
+
+{#if confirm}
+  <div class="overlay" onclick={() => (confirm = null)} role="presentation">
+    <div
+      class="modal"
+      onclick={(e) => e.stopPropagation()}
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+    >
+      <h2>{ACTION_LABEL[confirm.action]}?</h2>
+      <p>
+        Confirmar <b>{ACTION_LABEL[confirm.action].toLowerCase()}</b> de
+        <span class="mono">{confirm.job.name}</span>?
+        {#if confirm.action !== "stop"}
+          <span class="warn">Isso vai executar o serviço agora.</span>
+        {/if}
+      </p>
+      <div class="modal-actions">
+        <button class="btn ghost" onclick={() => (confirm = null)}>Cancelar</button>
+        <button class="btn primary" onclick={confirmYes}>{ACTION_LABEL[confirm.action]}</button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   :global(:root) {
@@ -301,6 +385,130 @@
     background: var(--panel-2);
     color: var(--text);
     border-color: var(--line-strong);
+  }
+
+  .sortbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: -6px 0 16px;
+  }
+  .sortlabel {
+    font-size: 12px;
+    color: var(--text-faint);
+  }
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    overflow: hidden;
+  }
+  .seg button {
+    background: transparent;
+    border: none;
+    color: var(--text-dim);
+    padding: 6px 12px;
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .seg button:hover {
+    color: var(--text);
+  }
+  .seg button.on {
+    background: var(--panel-2);
+    color: var(--text);
+  }
+  .seg button:first-child {
+    border-right: 1px solid var(--line);
+  }
+
+  .overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(2px);
+    display: grid;
+    place-items: center;
+    z-index: 50;
+    animation: fade 0.12s ease;
+  }
+  .modal {
+    width: 420px;
+    max-width: calc(100vw - 40px);
+    background: var(--panel);
+    border: 1px solid var(--line-strong);
+    border-radius: 14px;
+    padding: 22px 22px 18px;
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+    animation: pop 0.14s ease;
+  }
+  .modal h2 {
+    margin: 0 0 8px;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .modal p {
+    margin: 0 0 18px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text-dim);
+  }
+  .mono {
+    font-family: ui-monospace, "JetBrains Mono", monospace;
+    font-size: 12px;
+    color: var(--text);
+    background: var(--panel-2);
+    padding: 1px 6px;
+    border-radius: 5px;
+  }
+  .warn {
+    display: block;
+    margin-top: 8px;
+    color: var(--degraded);
+    font-size: 12px;
+  }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+  .btn {
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 540;
+    cursor: pointer;
+    border: 1px solid var(--line);
+    transition: all 0.12s;
+  }
+  .btn.ghost {
+    background: transparent;
+    color: var(--text-dim);
+  }
+  .btn.ghost:hover {
+    color: var(--text);
+    border-color: var(--line-strong);
+  }
+  .btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: white;
+  }
+  .btn.primary:hover {
+    filter: brightness(1.1);
+  }
+  @keyframes fade {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes pop {
+    from {
+      opacity: 0;
+      transform: scale(0.96);
+    }
   }
 
   .error {

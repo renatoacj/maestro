@@ -43,7 +43,8 @@ makepkg -si
 
 ## Desenvolvimento
 
-Requer Rust, Node 20+ e as libs do Tauri (`webkit2gtk-4.1`, `gtk3`).
+Requer Rust, Node 20+ e as libs do Tauri (`webkit2gtk-4.1`, `gtk3`,
+`libayatana-appindicator` para o ícone na bandeja).
 
 ```bash
 npm install
