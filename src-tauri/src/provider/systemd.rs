@@ -158,50 +158,63 @@ impl JobProvider for SystemdUserProvider {
 
     async fn list(&self) -> Result<Vec<Job>> {
         let mgr = self.manager().await?;
+        let home = std::env::var("HOME").unwrap_or_default();
 
-        // Mapa nome→estado-do-arquivo para descobrir o autostart (enabled).
-        let enabled_map: HashMap<String, String> = mgr
-            .list_unit_files()
+        // Unidades DO USUÁRIO = aquelas cujo arquivo vive sob o $HOME
+        // (~/.config/systemd/user, ~/.local/share/systemd/user). Isso exclui o
+        // plumbing do sistema (/usr/lib, /etc, /run) e os apps transitórios
+        // (`app-*` lançados pelo desktop, como navegadores), que não têm fragmento
+        // sob o home do usuário. Resultado: só o que o usuário de fato criou.
+        let mut user_files: HashMap<String, String> = HashMap::new(); // nome -> estado do arquivo
+        for (path, state) in mgr.list_unit_files().await? {
+            if home.is_empty() || !path.starts_with(&home) {
+                continue;
+            }
+            let Some(name) = path.rsplit('/').next() else {
+                continue;
+            };
+            if name.ends_with(".service") || name.ends_with(".timer") {
+                user_files.insert(name.to_string(), state);
+            }
+        }
+
+        // Estado atual das unidades carregadas, indexado por nome.
+        let loaded: HashMap<String, UnitInfo> = mgr
+            .list_units()
             .await?
             .into_iter()
-            .filter_map(|(path, state)| {
-                let name = path.rsplit('/').next()?.to_string();
-                Some((name, state))
-            })
+            .map(|u| (u.0.clone(), u))
             .collect();
 
-        let units = mgr.list_units().await?;
         let mut jobs = Vec::new();
-
-        for u in units {
-            let name = u.0;
-            let kind = if name.ends_with(".service") {
-                JobKind::Service
-            } else if name.ends_with(".timer") {
+        for (name, file_state) in &user_files {
+            let kind = if name.ends_with(".timer") {
                 JobKind::Scheduled
             } else {
-                continue; // v1: só services e timers
+                JobKind::Service
             };
 
-            let state = map_state(&u.3);
-            let enabled = enabled_map
-                .get(&name)
-                .map(|s| s == "enabled")
-                .unwrap_or(false);
+            // Carregada → usa estado/descrição reais; só no disco → Inactive.
+            let (description, state) = match loaded.get(name) {
+                Some(u) => (u.1.clone(), map_state(&u.3)),
+                None => (String::new(), JobState::Inactive),
+            };
+
+            let enabled = file_state == "enabled" || file_state == "enabled-runtime";
 
             let schedule = if kind == JobKind::Scheduled {
-                self.read_schedule(&name).await
+                self.read_schedule(name).await
             } else {
                 None
             };
 
             jobs.push(Job {
-                id: Job::global_id(PROVIDER_ID, &name),
+                id: Job::global_id(PROVIDER_ID, name),
                 provider: PROVIDER_ID.to_string(),
                 local_id: name.clone(),
                 kind,
-                name,
-                description: u.1,
+                name: name.clone(),
+                description,
                 command: None, // preenchido sob demanda (ExecStart) em incremento futuro
                 state,
                 enabled,

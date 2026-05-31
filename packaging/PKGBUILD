@@ -1,0 +1,39 @@
+# Maintainer: renatoacj <renatoacortes@hotmail.com>
+pkgname=maestro-git
+_pkgname=maestro
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Cockpit de jobs de background — controle e métricas de serviços, timers e daemons"
+arch=('x86_64')
+url="https://github.com/renatoacj/maestro"
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3')
+makedepends=('rust' 'cargo' 'nodejs' 'npm' 'git')
+provides=('maestro')
+conflicts=('maestro')
+source=("git+https://github.com/renatoacj/maestro.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$_pkgname"
+  printf "0.1.0.r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+  cd "$_pkgname"
+  npm ci
+  # Frontend (SvelteKit → build/) e binário Rust em release.
+  npm run build
+  cargo build --release --manifest-path src-tauri/Cargo.toml
+}
+
+package() {
+  cd "$_pkgname"
+  install -Dm755 "src-tauri/target/release/$_pkgname" "$pkgdir/usr/bin/$_pkgname"
+  install -Dm644 "src-tauri/icons/128x128.png" \
+    "$pkgdir/usr/share/icons/hicolor/128x128/apps/$_pkgname.png"
+  install -Dm644 "src-tauri/icons/icon.png" \
+    "$pkgdir/usr/share/icons/hicolor/512x512/apps/$_pkgname.png"
+  install -Dm644 "packaging/$_pkgname.desktop" \
+    "$pkgdir/usr/share/applications/$_pkgname.desktop"
+}

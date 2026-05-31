@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Maestro
+Comment=Cockpit de jobs de background — serviços, timers e daemons
+Exec=maestro
+Icon=maestro
+Terminal=false
+Categories=Utility;System;Monitor;
+Keywords=systemd;services;daemon;timer;background;monitor;
+StartupWMClass=Maestro

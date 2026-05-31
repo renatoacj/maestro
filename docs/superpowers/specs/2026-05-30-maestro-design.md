@@ -71,6 +71,9 @@ Cada peça é uma unidade isolada, com uma responsabilidade, testável com um `F
 
 - **`providers/`** — cada provider isolado, mesma trait.
   - `SystemdUserProvider` (v1) — session D-Bus, units `*.service` e `*.timer`.
+    Lista **apenas unidades do usuário** (arquivo sob o `$HOME`:
+    `~/.config/systemd/user`, `~/.local/share/systemd/user`), excluindo o plumbing
+    do sistema (`/usr/lib`, `/etc`, `/run`) e os apps transitórios `app-*`.
   - `DockerProvider` (v1, estruturado; inerte sem Docker instalado).
   - Depois: `SystemdSystemProvider` (v2, via polkit), `CronProvider` (v2),
     `LaunchdProvider` (v3, macOS), `WindowsProvider` (v3, Task Scheduler + Services).
