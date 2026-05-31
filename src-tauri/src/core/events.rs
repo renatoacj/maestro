@@ -52,16 +52,21 @@ fn spawn_watcher(registry: Arc<Registry>, app: AppHandle) {
                 continue;
             }
 
-            backoff = BACKOFF_MIN; // reconectou
             let mut merged = select_all(streams);
+            let mut lived = false;
             while merged.next().await.is_some() {
+                lived = true;
                 // Coalesce rajadas (um `daemon-reload` dispara muitos sinais).
                 tokio::time::sleep(DEBOUNCE).await;
                 tracing::debug!("sinal do systemd → re-emitindo jobs");
                 emit_jobs(&registry, &app).await;
             }
 
-            // Streams encerraram → provavelmente a conexão caiu. Backoff e re-subscribe.
+            // Streams encerraram → provavelmente a conexão caiu. Conexão que durou
+            // zera o backoff; quedas em sequência crescem o intervalo.
+            if lived {
+                backoff = BACKOFF_MIN;
+            }
             tracing::warn!(?backoff, "watch encerrou; reconectando");
             tokio::time::sleep(backoff).await;
             backoff = (backoff * 2).min(BACKOFF_MAX);

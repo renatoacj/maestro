@@ -8,6 +8,7 @@ pub enum Error {
     Unavailable(String),
 
     #[error("job não encontrado: {0}")]
+    #[allow(dead_code)] // usado por providers/testes; parte da API de erro
     NotFound(String),
 
     #[error("id de job inválido (esperado 'provider:local_id'): {0}")]

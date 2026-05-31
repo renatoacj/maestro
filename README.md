@@ -4,6 +4,8 @@
 
 **Cockpit de jobs de background — veja e controle seus serviços, timers e daemons sem CLI.**
 
+[![CI](https://github.com/renatoacj/maestro/actions/workflows/ci.yml/badge.svg)](https://github.com/renatoacj/maestro/actions/workflows/ci.yml)
+
 </div>
 
 Maestro reúne tudo que roda em segundo plano na sua máquina numa interface única,
@@ -55,6 +57,22 @@ npm run tauri dev      # janela de desenvolvimento
 npm run tauri build    # gera o binário e os instaladores
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
+
+## CI/CD
+
+- **CI** ([ci.yml](.github/workflows/ci.yml)) roda a cada push/PR: `svelte-check`,
+  build do frontend, `cargo fmt`, `clippy -D warnings` e testes.
+- **Release** ([release.yml](.github/workflows/release.yml)) dispara ao empurrar
+  uma tag `v*` e gera instaladores para **Linux** (deb/rpm/AppImage), **macOS**
+  (Apple Silicon + Intel) e **Windows** (msi/exe), anexando tudo a um release rascunho:
+
+  ```bash
+  git tag v0.2.0 && git push origin v0.2.0
+  ```
+
+Para auto-update assinado, gere a chave (`npm run tauri signer generate`) e
+adicione `TAURI_SIGNING_PRIVATE_KEY` e `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` como
+secrets do repositório (já referenciados no workflow).
 
 ## Arquitetura
 

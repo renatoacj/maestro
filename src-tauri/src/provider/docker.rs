@@ -73,7 +73,11 @@ impl JobProvider for DockerProvider {
             all: true,
             ..Default::default()
         };
-        let containers = self.docker.list_containers(Some(opts)).await.map_err(other)?;
+        let containers = self
+            .docker
+            .list_containers(Some(opts))
+            .await
+            .map_err(other)?;
 
         let mut jobs = Vec::new();
         for c in containers {

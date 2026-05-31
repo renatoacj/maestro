@@ -25,18 +25,21 @@ const TIMER_IFACE: &str = "org.freedesktop.systemd1.Timer";
 /// Entrada de `ExecStart`: (caminho, argv, ignore_failure, …timestamps…, pid, code, status).
 type ExecEntry = (String, Vec<String>, bool, u64, u64, u64, u64, u32, i32, i32);
 
+/// Mudança retornada por Enable/DisableUnitFiles: (tipo, nome, destino).
+type UnitFileChange = (String, String, String);
+
 /// Tupla retornada por `ListUnits`, na ordem definida pela API do systemd.
 type UnitInfo = (
-    String,           // 0 nome (ex: "my-worker.service")
-    String,           // 1 descrição
-    String,           // 2 load state
-    String,           // 3 active state ("active", "failed", …)
-    String,           // 4 sub state
-    String,           // 5 followed
-    OwnedObjectPath,  // 6 object path da unit
-    u32,              // 7 job id
-    String,           // 8 job type
-    OwnedObjectPath,  // 9 job object path
+    String,          // 0 nome (ex: "my-worker.service")
+    String,          // 1 descrição
+    String,          // 2 load state
+    String,          // 3 active state ("active", "failed", …)
+    String,          // 4 sub state
+    String,          // 5 followed
+    OwnedObjectPath, // 6 object path da unit
+    u32,             // 7 job id
+    String,          // 8 job type
+    OwnedObjectPath, // 9 job object path
 );
 
 #[zbus::proxy(
@@ -56,12 +59,12 @@ trait Manager {
         files: &[&str],
         runtime: bool,
         force: bool,
-    ) -> zbus::Result<(bool, Vec<(String, String, String)>)>;
+    ) -> zbus::Result<(bool, Vec<UnitFileChange>)>;
     fn disable_unit_files(
         &self,
         files: &[&str],
         runtime: bool,
-    ) -> zbus::Result<Vec<(String, String, String)>>;
+    ) -> zbus::Result<Vec<UnitFileChange>>;
 
     /// Habilita a emissão de sinais (UnitNew/JobRemoved/…) neste cliente.
     fn subscribe(&self) -> zbus::Result<()>;
@@ -158,7 +161,8 @@ impl SystemdUserProvider {
         let proxy = zbus::Proxy::new(&self.conn, DEST, path, TIMER_IFACE)
             .await
             .ok()?;
-        let to_secs = |usec: u64| (usec != 0 && usec != u64::MAX).then(|| (usec / 1_000_000) as i64);
+        let to_secs =
+            |usec: u64| (usec != 0 && usec != u64::MAX).then_some((usec / 1_000_000) as i64);
         let next = proxy
             .get_property::<u64>("NextElapseUSecRealtime")
             .await
@@ -467,11 +471,23 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         let r2 = provider.metrics(&active.local_id).await.unwrap();
 
-        eprintln!("1ª amostra: cpu={:?} mem={:?} pids={:?}", r1.cpu_pct, r1.mem_bytes, r1.pids);
-        eprintln!("2ª amostra: cpu={:?} mem={:?} pids={:?}", r2.cpu_pct, r2.mem_bytes, r2.pids);
-        assert!(r2.mem_bytes.is_some(), "memória deveria estar disponível (cgroup v2)");
+        eprintln!(
+            "1ª amostra: cpu={:?} mem={:?} pids={:?}",
+            r1.cpu_pct, r1.mem_bytes, r1.pids
+        );
+        eprintln!(
+            "2ª amostra: cpu={:?} mem={:?} pids={:?}",
+            r2.cpu_pct, r2.mem_bytes, r2.pids
+        );
+        assert!(
+            r2.mem_bytes.is_some(),
+            "memória deveria estar disponível (cgroup v2)"
+        );
         assert!(r1.cpu_pct.is_none(), "1ª amostra não tem delta → CPU None");
-        assert!(r2.cpu_pct.is_some(), "2ª amostra deveria ter CPU% calculado");
+        assert!(
+            r2.cpu_pct.is_some(),
+            "2ª amostra deveria ter CPU% calculado"
+        );
     }
 
     /// Detalhe + logs de um serviço real.

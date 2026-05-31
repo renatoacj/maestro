@@ -83,7 +83,11 @@ mod tests {
 
     fn registry() -> Registry {
         Registry::new(vec![
-            Box::new(FakeProvider::new("systemd-user", true, &["a.service", "b.timer"])),
+            Box::new(FakeProvider::new(
+                "systemd-user",
+                true,
+                &["a.service", "b.timer"],
+            )),
             Box::new(FakeProvider::new("docker", false, &[])),
         ])
     }
@@ -118,10 +122,7 @@ mod tests {
     #[tokio::test]
     async fn control_rejects_unknown_provider() {
         let reg = registry();
-        let err = reg
-            .control("cron:x", Action::Start)
-            .await
-            .unwrap_err();
+        let err = reg.control("cron:x", Action::Start).await.unwrap_err();
         assert!(matches!(err, Error::Unavailable(_)));
     }
 
