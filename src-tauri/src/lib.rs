@@ -97,16 +97,24 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Ao minimizar, esconde a janela (some da barra de tarefas) — fica só na bandeja.
+/// Fechar (✕) ou minimizar escondem a janela para a bandeja em vez de encerrar.
+/// O app só sai de fato pelo "Sair" no menu da bandeja.
 fn setup_minimize_to_tray(app: &tauri::App) {
     if let Some(window) = app.get_webview_window("main") {
         let w = window.clone();
-        window.on_window_event(move |event| {
-            if let WindowEvent::Resized(_) = event {
+        window.on_window_event(move |event| match event {
+            // Intercepta o fechar: não encerra, só esconde para a bandeja.
+            WindowEvent::CloseRequested { api, .. } => {
+                api.prevent_close();
+                let _ = w.hide();
+            }
+            // Minimizar também recolhe para a bandeja (some da barra de tarefas).
+            WindowEvent::Resized(_) => {
                 if w.is_minimized().unwrap_or(false) {
                     let _ = w.hide();
                 }
             }
+            _ => {}
         });
     }
 }
