@@ -51,6 +51,18 @@ impl Registry {
         provider.metrics(&local_id).await
     }
 
+    /// Detalhe sob demanda de um job pelo id global.
+    pub async fn detail(&self, global_id: &str) -> Result<crate::model::JobDetail> {
+        let (provider, local_id) = self.route(global_id)?;
+        provider.detail(&local_id).await
+    }
+
+    /// Últimas `lines` linhas de log de um job pelo id global.
+    pub async fn logs(&self, global_id: &str, lines: u32) -> Result<Vec<String>> {
+        let (provider, local_id) = self.route(global_id)?;
+        provider.logs(&local_id, lines).await
+    }
+
     /// Streams de mudança de todos os providers que suportam push.
     pub async fn watch_streams(&self) -> Vec<ChangeStream> {
         let mut streams = Vec::new();

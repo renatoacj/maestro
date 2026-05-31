@@ -12,14 +12,18 @@ use zbus::zvariant::OwnedObjectPath;
 use zbus::Connection;
 
 use crate::error::{Error, Result};
-use crate::model::{Action, Health, Job, JobKind, JobState, Resources, Schedule};
+use crate::model::{Action, Health, Job, JobDetail, JobKind, JobState, Resources, Schedule};
 use crate::provider::JobProvider;
 
 pub const PROVIDER_ID: &str = "systemd-user";
 
 const DEST: &str = "org.freedesktop.systemd1";
+const UNIT_IFACE: &str = "org.freedesktop.systemd1.Unit";
 const SERVICE_IFACE: &str = "org.freedesktop.systemd1.Service";
 const TIMER_IFACE: &str = "org.freedesktop.systemd1.Timer";
+
+/// Entrada de `ExecStart`: (caminho, argv, ignore_failure, …timestamps…, pid, code, status).
+type ExecEntry = (String, Vec<String>, bool, u64, u64, u64, u64, u32, i32, i32);
 
 /// Tupla retornada por `ListUnits`, na ordem definida pela API do systemd.
 type UnitInfo = (
@@ -314,6 +318,73 @@ impl JobProvider for SystemdUserProvider {
         Ok(self.read_resources(local_id).await)
     }
 
+    async fn detail(&self, local_id: &str) -> Result<JobDetail> {
+        let mgr = self.manager().await?;
+        let path = mgr.get_unit(local_id).await?;
+        let mut d = JobDetail::default();
+
+        // Interface Unit: caminho do arquivo e desde quando está ativo.
+        if let Ok(unit) = zbus::Proxy::new(&self.conn, DEST, path.clone(), UNIT_IFACE).await {
+            if let Ok(fp) = unit.get_property::<String>("FragmentPath").await {
+                if !fp.is_empty() {
+                    d.fragment_path = Some(fp);
+                }
+            }
+            if let Ok(ts) = unit.get_property::<u64>("ActiveEnterTimestamp").await {
+                if ts != 0 && ts != u64::MAX {
+                    d.since = Some((ts / 1_000_000) as i64);
+                }
+            }
+        }
+
+        // Interface Service: comando, motivo de término e código de saída.
+        if local_id.ends_with(".service") {
+            if let Ok(svc) = zbus::Proxy::new(&self.conn, DEST, path, SERVICE_IFACE).await {
+                if let Ok(execs) = svc.get_property::<Vec<ExecEntry>>("ExecStart").await {
+                    if let Some(first) = execs.first() {
+                        d.command = Some(first.1.join(" "));
+                    }
+                }
+                if let Ok(res) = svc.get_property::<String>("Result").await {
+                    if !res.is_empty() {
+                        d.exit_reason = Some(res);
+                    }
+                }
+                if let Ok(code) = svc.get_property::<i32>("ExecMainStatus").await {
+                    d.exit_code = Some(code);
+                }
+            }
+        }
+        Ok(d)
+    }
+
+    async fn logs(&self, local_id: &str, lines: u32) -> Result<Vec<String>> {
+        // journalctl chamado com argv fixo — nenhuma interpolação de shell.
+        let n = lines.clamp(1, 5000).to_string();
+        let out = tokio::process::Command::new("journalctl")
+            .args([
+                "--user",
+                "-u",
+                local_id,
+                "-n",
+                &n,
+                "--no-pager",
+                "-o",
+                "short-iso",
+            ])
+            .output()
+            .await
+            .map_err(|e| Error::Other(format!("journalctl falhou: {e}")))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(Error::Other(format!("journalctl: {}", err.trim())));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect())
+    }
+
     async fn watch(&self) -> Option<crate::provider::ChangeStream> {
         use futures_util::StreamExt;
 
@@ -401,5 +472,32 @@ mod tests {
         assert!(r2.mem_bytes.is_some(), "memória deveria estar disponível (cgroup v2)");
         assert!(r1.cpu_pct.is_none(), "1ª amostra não tem delta → CPU None");
         assert!(r2.cpu_pct.is_some(), "2ª amostra deveria ter CPU% calculado");
+    }
+
+    /// Detalhe + logs de um serviço real.
+    /// `cargo test -- --ignored detail_live --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn detail_live() {
+        let provider = SystemdUserProvider::connect().await.unwrap();
+        let jobs = provider.list().await.unwrap();
+        let svc = jobs
+            .iter()
+            .find(|j| j.local_id.ends_with(".service"))
+            .expect("precisa de um .service");
+        eprintln!("detalhe de: {}", svc.local_id);
+
+        let d = provider.detail(&svc.local_id).await.unwrap();
+        eprintln!(
+            "command={:?}\nfragment={:?}\nexit_code={:?} reason={:?} since={:?}",
+            d.command, d.fragment_path, d.exit_code, d.exit_reason, d.since
+        );
+        assert!(d.fragment_path.is_some(), "deveria achar o FragmentPath");
+
+        let logs = provider.logs(&svc.local_id, 5).await.unwrap();
+        eprintln!("--- {} linhas de log ---", logs.len());
+        for l in &logs {
+            eprintln!("{l}");
+        }
     }
 }

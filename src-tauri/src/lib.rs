@@ -40,6 +40,8 @@ pub fn run() {
             ipc::list_jobs,
             ipc::control_job,
             ipc::job_metrics,
+            ipc::job_detail,
+            ipc::job_logs,
         ])
         .setup(move |app| {
             // Tray é não-fatal: se a libayatana-appindicator não estiver presente,

@@ -92,6 +92,23 @@ impl Job {
     }
 }
 
+/// Informação rica de um job, buscada sob demanda ao abrir o painel de detalhe.
+/// Complementa o [`Job`] que a UI já tem da listagem.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct JobDetail {
+    /// Comando executado (ExecStart), quando aplicável.
+    pub command: Option<String>,
+    /// Caminho do arquivo da unit (FragmentPath).
+    pub fragment_path: Option<String>,
+    /// Código de saída do processo principal (ExecMainStatus), quando houve.
+    pub exit_code: Option<i32>,
+    /// Motivo do último término (Result): "success", "exit-code", "signal", …
+    pub exit_reason: Option<String>,
+    /// Desde quando está no estado atual (ActiveEnterTimestamp, epoch s).
+    pub since: Option<i64>,
+}
+
 /// Ações de ciclo de vida que um provider pode executar sobre um job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

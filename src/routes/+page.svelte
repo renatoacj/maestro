@@ -4,10 +4,13 @@
   import {
     listJobs,
     controlJob,
+    jobDetail,
+    jobLogs,
     type Job,
     type Action,
     type Health,
     type Resources,
+    type JobDetail,
   } from "$lib/api";
   import { relativeTime, formatCpu, formatBytes } from "$lib/format";
 
@@ -20,6 +23,25 @@
   let busy = $state<Set<string>>(new Set());
   let loaded = $state(false);
   let confirm = $state<{ job: Job; action: Action } | null>(null);
+
+  // Painel de detalhe
+  let selectedId = $state<string | null>(null);
+  let detail = $state<JobDetail | null>(null);
+  let logs = $state<string[]>([]);
+  let followLogs = $state(true);
+  let logsTimer: ReturnType<typeof setInterval> | null = null;
+  // Job sempre fresco (reflete os eventos `jobs`), derivado do id selecionado.
+  const selected = $derived(selectedId ? (jobs.find((j) => j.id === selectedId) ?? null) : null);
+  const failInfo = $derived(
+    detail && detail.exitReason && detail.exitReason !== "success"
+      ? `${detail.exitReason}${detail.exitCode != null ? ` (código ${detail.exitCode})` : ""}`
+      : null,
+  );
+  let logsEl = $state<HTMLPreElement | null>(null);
+  $effect(() => {
+    logs; // dependência
+    if (logsEl && followLogs) logsEl.scrollTop = logsEl.scrollHeight;
+  });
 
   const healthRank: Record<Health, number> = { failed: 0, degraded: 1, ok: 2 };
   // Ordenação por atividade: ativos no topo, inativos embaixo.
@@ -116,6 +138,50 @@
     }
   }
 
+  // --- Detalhe + logs ---
+  async function openDetail(job: Job) {
+    selectedId = job.id;
+    detail = null;
+    logs = [];
+    try {
+      detail = await jobDetail(job.id);
+    } catch (e) {
+      error = String(e);
+    }
+    await fetchLogs();
+    startFollow();
+  }
+
+  async function fetchLogs() {
+    if (!selectedId) return;
+    try {
+      logs = await jobLogs(selectedId, 300);
+    } catch (e) {
+      logs = [`(sem logs: ${e})`];
+    }
+  }
+
+  function startFollow() {
+    stopFollow();
+    if (followLogs) logsTimer = setInterval(fetchLogs, 2000);
+  }
+  function stopFollow() {
+    if (logsTimer) {
+      clearInterval(logsTimer);
+      logsTimer = null;
+    }
+  }
+  function toggleFollow() {
+    followLogs = !followLogs;
+    startFollow();
+  }
+  function closeDetail() {
+    selectedId = null;
+    detail = null;
+    logs = [];
+    stopFollow();
+  }
+
   // Push do backend: `jobs` (mudança de estado) e `metrics` (CPU/mem a cada 2s).
   let unlisten: UnlistenFn[] = [];
   onMount(async () => {
@@ -132,7 +198,15 @@
       }),
     );
   });
-  onDestroy(() => unlisten.forEach((u) => u()));
+  onDestroy(() => {
+    unlisten.forEach((u) => u());
+    stopFollow();
+  });
+
+  function onEscape() {
+    if (confirm) confirm = null;
+    else if (selectedId) closeDetail();
+  }
 </script>
 
 <div class="app">
@@ -183,7 +257,13 @@
           <li class="row" class:busy={busy.has(job.id)}>
             <span class="dot {job.health}" title={job.state}></span>
 
-            <div class="info">
+            <div
+              class="info"
+              role="button"
+              tabindex="0"
+              onclick={() => openDetail(job)}
+              onkeydown={(e) => (e.key === "Enter" || e.key === " ") && openDetail(job)}
+            >
               <div class="line1">
                 <span class="name">{job.name}</span>
                 <span class="kind">{job.kind}</span>
@@ -231,7 +311,67 @@
   </main>
 </div>
 
-<svelte:window onkeydown={(e) => e.key === "Escape" && (confirm = null)} />
+<svelte:window onkeydown={(e) => e.key === "Escape" && onEscape()} />
+
+{#if selected}
+  <div class="drawer-backdrop" onclick={closeDetail} role="presentation"></div>
+  <aside class="drawer">
+    <header class="dh">
+      <div class="dh-main">
+        <div class="dtitle">
+          <span class="dot {selected.health}"></span>
+          <h2>{selected.name}</h2>
+        </div>
+        <span class="kind">{selected.kind}</span>
+        {#if selected.enabled}<span class="badge">autostart</span>{/if}
+      </div>
+      <button class="close" onclick={closeDetail} aria-label="Fechar">✕</button>
+    </header>
+
+    <div class="dbody">
+      <p class="ddesc">{selected.description || "—"}</p>
+
+      <dl class="meta">
+        {#if failInfo}
+          <dt>Falha</dt>
+          <dd class="fail">{failInfo}</dd>
+        {/if}
+        {#if detail?.command}
+          <dt>Comando</dt>
+          <dd class="mono wrap">{detail.command}</dd>
+        {/if}
+        {#if detail?.fragmentPath}
+          <dt>Arquivo</dt>
+          <dd class="mono wrap">{detail.fragmentPath}</dd>
+        {/if}
+        {#if selected.kind === "scheduled" && selected.schedule}
+          <dt>Próximo</dt>
+          <dd>{relativeTime(selected.schedule.nextRun)}</dd>
+          <dt>Último</dt>
+          <dd>{relativeTime(selected.schedule.lastRun)}</dd>
+        {/if}
+        {#if detail?.since}
+          <dt>Ativo desde</dt>
+          <dd>{relativeTime(detail.since)}</dd>
+        {/if}
+        {#if metrics[selected.id]}
+          <dt>CPU</dt>
+          <dd>{formatCpu(metrics[selected.id].cpuPct)}</dd>
+          <dt>Memória</dt>
+          <dd>{formatBytes(metrics[selected.id].memBytes)}</dd>
+        {/if}
+      </dl>
+
+      <div class="logs-head">
+        <h3>Logs</h3>
+        <button class="follow" class:on={followLogs} onclick={toggleFollow}>
+          {followLogs ? "● ao vivo" : "pausado"}
+        </button>
+      </div>
+      <pre class="logs" bind:this={logsEl}>{logs.length ? logs.join("\n") : "(sem logs)"}</pre>
+    </div>
+  </aside>
+{/if}
 
 {#if confirm}
   <div class="overlay" onclick={() => (confirm = null)} role="presentation">
@@ -504,6 +644,149 @@
     }
   }
 
+  /* --- Drawer de detalhe --- */
+  .drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 40;
+    animation: fade 0.12s ease;
+  }
+  .drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 480px;
+    max-width: 100vw;
+    background: var(--panel);
+    border-left: 1px solid var(--line-strong);
+    z-index: 45;
+    display: flex;
+    flex-direction: column;
+    box-shadow: -24px 0 60px rgba(0, 0, 0, 0.4);
+    animation: slide 0.16s ease;
+  }
+  @keyframes slide {
+    from {
+      transform: translateX(20px);
+      opacity: 0;
+    }
+  }
+  .dh {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--line);
+  }
+  .dh-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .dtitle {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .dtitle h2 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+    word-break: break-all;
+  }
+  .close {
+    background: transparent;
+    border: none;
+    color: var(--text-faint);
+    font-size: 15px;
+    cursor: pointer;
+    padding: 4px;
+    line-height: 1;
+  }
+  .close:hover {
+    color: var(--text);
+  }
+  .dbody {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px 20px 24px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .ddesc {
+    margin: 0 0 16px;
+    font-size: 13px;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+  .meta {
+    display: grid;
+    grid-template-columns: 92px 1fr;
+    gap: 8px 14px;
+    margin: 0 0 20px;
+    font-size: 12.5px;
+  }
+  .meta dt {
+    color: var(--text-faint);
+  }
+  .meta dd {
+    margin: 0;
+    color: var(--text);
+  }
+  .meta dd.wrap {
+    word-break: break-all;
+  }
+  .meta dd.fail {
+    color: var(--fail);
+  }
+
+  .logs-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .logs-head h3 {
+    margin: 0;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+  }
+  .follow {
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--text-faint);
+    font-size: 11px;
+    padding: 4px 9px;
+    cursor: pointer;
+  }
+  .follow.on {
+    color: var(--ok);
+    border-color: rgba(88, 201, 138, 0.3);
+  }
+  .logs {
+    flex: 1;
+    min-height: 180px;
+    margin: 0;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 12px;
+    overflow: auto;
+    font-family: ui-monospace, "JetBrains Mono", monospace;
+    font-size: 11px;
+    line-height: 1.55;
+    color: var(--text-dim);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
   .error {
     background: rgba(239, 111, 111, 0.1);
     border: 1px solid rgba(239, 111, 111, 0.3);
@@ -570,6 +853,11 @@
   .info {
     flex: 1;
     min-width: 0;
+    cursor: pointer;
+    outline: none;
+  }
+  .info:focus-visible .name {
+    color: var(--accent);
   }
   .line1 {
     display: flex;

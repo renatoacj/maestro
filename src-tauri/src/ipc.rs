@@ -7,7 +7,7 @@ use tauri::State;
 
 use crate::core::registry::Registry;
 use crate::error::Result;
-use crate::model::{Action, Job, Resources};
+use crate::model::{Action, Job, JobDetail, Resources};
 
 /// Lista todos os jobs de todos os providers disponíveis.
 #[tauri::command]
@@ -29,4 +29,20 @@ pub async fn control_job(
 #[tauri::command]
 pub async fn job_metrics(registry: State<'_, Arc<Registry>>, id: String) -> Result<Resources> {
     registry.metrics(&id).await
+}
+
+/// Detalhe sob demanda de um job (comando, motivo de falha, etc.).
+#[tauri::command]
+pub async fn job_detail(registry: State<'_, Arc<Registry>>, id: String) -> Result<JobDetail> {
+    registry.detail(&id).await
+}
+
+/// Últimas `lines` linhas de log de um job.
+#[tauri::command]
+pub async fn job_logs(
+    registry: State<'_, Arc<Registry>>,
+    id: String,
+    lines: u32,
+) -> Result<Vec<String>> {
+    registry.logs(&id, lines).await
 }

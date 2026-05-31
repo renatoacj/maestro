@@ -7,8 +7,8 @@
 
 use std::pin::Pin;
 
-use crate::error::Result;
-use crate::model::{Action, Job, Resources};
+use crate::error::{Error, Result};
+use crate::model::{Action, Job, JobDetail, Resources};
 use async_trait::async_trait;
 use futures_util::Stream;
 
@@ -48,5 +48,15 @@ pub trait JobProvider: Send + Sync {
     /// nesse caso o núcleo cai para amostragem periódica.
     async fn watch(&self) -> Option<ChangeStream> {
         None
+    }
+
+    /// Detalhe sob demanda de um job (comando, motivo de falha, etc.).
+    async fn detail(&self, _local_id: &str) -> Result<JobDetail> {
+        Err(Error::Unsupported("detail".into()))
+    }
+
+    /// Últimas `lines` linhas de log do job.
+    async fn logs(&self, _local_id: &str, _lines: u32) -> Result<Vec<String>> {
+        Err(Error::Unsupported("logs".into()))
     }
 }

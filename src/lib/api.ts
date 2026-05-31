@@ -46,9 +46,22 @@ export interface Job {
   health: Health;
 }
 
+export interface JobDetail {
+  command: string | null;
+  fragmentPath: string | null;
+  exitCode: number | null;
+  exitReason: string | null;
+  since: number | null; // epoch (s)
+}
+
 export const listJobs = () => invoke<Job[]>("list_jobs");
 
 export const controlJob = (id: string, action: Action) =>
   invoke<void>("control_job", { id, action });
 
 export const jobMetrics = (id: string) => invoke<Resources>("job_metrics", { id });
+
+export const jobDetail = (id: string) => invoke<JobDetail>("job_detail", { id });
+
+export const jobLogs = (id: string, lines = 200) =>
+  invoke<string[]>("job_logs", { id, lines });
