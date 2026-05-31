@@ -26,7 +26,20 @@
   let sort = $state<"health" | "activity">("health");
   let busy = $state<Set<string>>(new Set());
   let loaded = $state(false);
-  let confirm = $state<{ job: Job; action: Action } | null>(null);
+  let confirm = $state<{ jobs: Job[]; action: Action } | null>(null);
+
+  // Seleção múltipla para ações em lote
+  let selection = $state<Set<string>>(new Set());
+  const selectedJobs = $derived(jobs.filter((j) => selection.has(j.id)));
+
+  // Toasts (erros inline por ação)
+  let toasts = $state<{ id: number; msg: string }[]>([]);
+  let toastSeq = 0;
+  function toast(msg: string) {
+    const id = ++toastSeq;
+    toasts = [...toasts, { id, msg }];
+    setTimeout(() => (toasts = toasts.filter((t) => t.id !== id)), 6000);
+  }
 
   // Paleta de comandos (⌘K)
   let palette = $state(false);
@@ -129,18 +142,32 @@
   // Ponto de entrada dos botões: pede confirmação nas ações que executam algo.
   function request(job: Job, action: Action) {
     if (CONFIRM_ACTIONS.includes(action)) {
-      confirm = { job, action };
+      confirm = { jobs: [job], action };
     } else {
       act(job, action);
     }
   }
 
-  function confirmYes() {
-    if (confirm) {
-      const { job, action } = confirm;
-      confirm = null;
-      act(job, action);
+  // Ação em lote sobre a seleção atual.
+  function requestBatch(action: Action) {
+    if (selectedJobs.length === 0) return;
+    if (CONFIRM_ACTIONS.includes(action)) {
+      confirm = { jobs: selectedJobs, action };
+    } else {
+      runBatch(selectedJobs, action);
     }
+  }
+
+  async function confirmYes() {
+    if (!confirm) return;
+    const { jobs: targets, action } = confirm;
+    confirm = null;
+    await runBatch(targets, action);
+  }
+
+  async function runBatch(targets: Job[], action: Action) {
+    await Promise.all(targets.map((j) => act(j, action)));
+    selection = new Set();
   }
 
   async function act(job: Job, action: Action) {
@@ -149,12 +176,18 @@
       await controlJob(job.id, action);
       await reload(); // feedback imediato; o evento `jobs` também confirmará
     } catch (e) {
-      error = String(e);
+      toast(`${job.name}: ${e}`);
     } finally {
       const next = new Set(busy);
       next.delete(job.id);
       busy = next;
     }
+  }
+
+  function toggleSelect(id: string) {
+    const next = new Set(selection);
+    next.has(id) ? next.delete(id) : next.add(id);
+    selection = next;
   }
 
   // --- Detalhe + logs ---
@@ -329,7 +362,14 @@
     {:else}
       <ul class="list">
         {#each visible as job (job.id)}
-          <li class="row" class:busy={busy.has(job.id)}>
+          <li class="row" class:busy={busy.has(job.id)} class:sel={selection.has(job.id)}>
+            <input
+              type="checkbox"
+              class="rowcheck"
+              checked={selection.has(job.id)}
+              onchange={() => toggleSelect(job.id)}
+              aria-label="Selecionar {job.name}"
+            />
             <span class="dot {job.health}" title={job.state}></span>
 
             <div
@@ -500,6 +540,24 @@
   </aside>
 {/if}
 
+{#if selection.size > 0}
+  <div class="bulkbar">
+    <span class="bulkcount">{selection.size} selecionado{selection.size > 1 ? "s" : ""}</span>
+    <div class="bulkactions">
+      <button onclick={() => requestBatch("start")}>▶ Iniciar</button>
+      <button onclick={() => requestBatch("restart")}>↻ Reiniciar</button>
+      <button class="danger" onclick={() => requestBatch("stop")}>■ Parar</button>
+    </div>
+    <button class="bulkclear" onclick={() => (selection = new Set())}>Limpar</button>
+  </div>
+{/if}
+
+<div class="toasts">
+  {#each toasts as t (t.id)}
+    <div class="toast">{t.msg}</div>
+  {/each}
+</div>
+
 {#if confirm}
   <div class="overlay" onclick={() => (confirm = null)} role="presentation">
     <div
@@ -511,10 +569,17 @@
     >
       <h2>{ACTION_LABEL[confirm.action]}?</h2>
       <p>
-        Confirmar <b>{ACTION_LABEL[confirm.action].toLowerCase()}</b> de
-        <span class="mono">{confirm.job.name}</span>?
+        {#if confirm.jobs.length === 1}
+          Confirmar <b>{ACTION_LABEL[confirm.action].toLowerCase()}</b> de
+          <span class="mono">{confirm.jobs[0].name}</span>?
+        {:else}
+          Confirmar <b>{ACTION_LABEL[confirm.action].toLowerCase()}</b> de
+          <b>{confirm.jobs.length}</b> serviços?
+        {/if}
         {#if confirm.action !== "stop"}
-          <span class="warn">Isso vai executar o serviço agora.</span>
+          <span class="warn">
+            Isso vai executar {confirm.jobs.length === 1 ? "o serviço" : "os serviços"} agora.
+          </span>
         {/if}
       </p>
       <div class="modal-actions">
@@ -867,6 +932,87 @@
     color: var(--text-faint);
   }
 
+  /* --- Barra de ações em lote --- */
+  .bulkbar {
+    position: fixed;
+    bottom: 22px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    background: var(--panel-2);
+    border: 1px solid var(--line-strong);
+    border-radius: 12px;
+    padding: 10px 14px;
+    box-shadow: 0 14px 44px rgba(0, 0, 0, 0.5);
+    z-index: 30;
+    animation: pop 0.14s ease;
+  }
+  .bulkcount {
+    font-size: 12.5px;
+    color: var(--text-dim);
+  }
+  .bulkactions {
+    display: flex;
+    gap: 6px;
+  }
+  .bulkactions button {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 7px 12px;
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .bulkactions button:hover {
+    border-color: var(--line-strong);
+  }
+  .bulkactions button.danger:hover {
+    color: var(--fail);
+    border-color: rgba(239, 111, 111, 0.4);
+  }
+  .bulkclear {
+    background: transparent;
+    border: none;
+    color: var(--text-faint);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .bulkclear:hover {
+    color: var(--text);
+  }
+
+  /* --- Toasts --- */
+  .toasts {
+    position: fixed;
+    bottom: 22px;
+    right: 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 60;
+    max-width: 380px;
+  }
+  .toast {
+    background: rgba(239, 111, 111, 0.12);
+    border: 1px solid rgba(239, 111, 111, 0.35);
+    color: var(--fail);
+    padding: 10px 14px;
+    border-radius: 9px;
+    font-size: 12.5px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+    animation: slidein 0.15s ease;
+  }
+  @keyframes slidein {
+    from {
+      opacity: 0;
+      transform: translateX(10px);
+    }
+  }
+
   /* --- Drawer de detalhe --- */
   .drawer-backdrop {
     position: fixed;
@@ -1083,6 +1229,23 @@
   .row.busy {
     opacity: 0.5;
     pointer-events: none;
+  }
+
+  .rowcheck {
+    width: 15px;
+    height: 15px;
+    accent-color: var(--accent);
+    cursor: pointer;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+  .row:hover .rowcheck,
+  .row.sel .rowcheck {
+    opacity: 1;
+  }
+  .row.sel {
+    background: rgba(124, 108, 240, 0.07);
   }
 
   .dot {
