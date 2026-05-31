@@ -1,0 +1,281 @@
+//! Provider para `systemd --user` via session D-Bus (sem root, sem shell).
+//!
+//! Fala diretamente com `org.freedesktop.systemd1.Manager` no barramento de sessão.
+//! Nenhum comando é interpolado em shell: todas as ações são chamadas D-Bus tipadas.
+
+use std::collections::HashMap;
+
+use async_trait::async_trait;
+use zbus::zvariant::OwnedObjectPath;
+use zbus::Connection;
+
+use crate::error::{Error, Result};
+use crate::model::{Action, Health, Job, JobKind, JobState, Resources, Schedule};
+use crate::provider::JobProvider;
+
+pub const PROVIDER_ID: &str = "systemd-user";
+
+const DEST: &str = "org.freedesktop.systemd1";
+const SERVICE_IFACE: &str = "org.freedesktop.systemd1.Service";
+const TIMER_IFACE: &str = "org.freedesktop.systemd1.Timer";
+
+/// Tupla retornada por `ListUnits`, na ordem definida pela API do systemd.
+type UnitInfo = (
+    String,           // 0 nome (ex: "my-worker.service")
+    String,           // 1 descrição
+    String,           // 2 load state
+    String,           // 3 active state ("active", "failed", …)
+    String,           // 4 sub state
+    String,           // 5 followed
+    OwnedObjectPath,  // 6 object path da unit
+    u32,              // 7 job id
+    String,           // 8 job type
+    OwnedObjectPath,  // 9 job object path
+);
+
+#[zbus::proxy(
+    interface = "org.freedesktop.systemd1.Manager",
+    default_service = "org.freedesktop.systemd1",
+    default_path = "/org/freedesktop/systemd1"
+)]
+trait Manager {
+    fn list_units(&self) -> zbus::Result<Vec<UnitInfo>>;
+    fn list_unit_files(&self) -> zbus::Result<Vec<(String, String)>>;
+    fn get_unit(&self, name: &str) -> zbus::Result<OwnedObjectPath>;
+    fn start_unit(&self, name: &str, mode: &str) -> zbus::Result<OwnedObjectPath>;
+    fn stop_unit(&self, name: &str, mode: &str) -> zbus::Result<OwnedObjectPath>;
+    fn restart_unit(&self, name: &str, mode: &str) -> zbus::Result<OwnedObjectPath>;
+    fn enable_unit_files(
+        &self,
+        files: &[&str],
+        runtime: bool,
+        force: bool,
+    ) -> zbus::Result<(bool, Vec<(String, String, String)>)>;
+    fn disable_unit_files(
+        &self,
+        files: &[&str],
+        runtime: bool,
+    ) -> zbus::Result<Vec<(String, String, String)>>;
+}
+
+/// Provider de user-services e user-timers do systemd.
+pub struct SystemdUserProvider {
+    conn: Connection,
+}
+
+impl SystemdUserProvider {
+    /// Conecta ao session bus do usuário. Falha se não houver session D-Bus.
+    pub async fn connect() -> Result<Self> {
+        let conn = Connection::session().await?;
+        Ok(Self { conn })
+    }
+
+    async fn manager(&self) -> Result<ManagerProxy<'_>> {
+        Ok(ManagerProxy::new(&self.conn).await?)
+    }
+
+    /// Lê recursos de um job pela interface apropriada (best-effort).
+    async fn read_resources(&self, name: &str) -> Resources {
+        let mut res = Resources::default();
+        let Ok(mgr) = self.manager().await else {
+            return res;
+        };
+        let Ok(path) = mgr.get_unit(name).await else {
+            return res;
+        };
+        if let Ok(proxy) = zbus::Proxy::new(&self.conn, DEST, path, SERVICE_IFACE).await {
+            // u64::MAX significa "não disponível" no systemd.
+            if let Ok(mem) = proxy.get_property::<u64>("MemoryCurrent").await {
+                if mem != u64::MAX {
+                    res.mem_bytes = Some(mem);
+                }
+            }
+            if let Ok(pid) = proxy.get_property::<u32>("MainPID").await {
+                if pid != 0 {
+                    res.pids.push(pid);
+                }
+            }
+        }
+        res
+    }
+
+    /// Lê próximo/último disparo de um timer (best-effort). usec→sec desde epoch.
+    async fn read_schedule(&self, timer_name: &str) -> Option<Schedule> {
+        let mgr = self.manager().await.ok()?;
+        let path = mgr.get_unit(timer_name).await.ok()?;
+        let proxy = zbus::Proxy::new(&self.conn, DEST, path, TIMER_IFACE)
+            .await
+            .ok()?;
+        let to_secs = |usec: u64| (usec != 0 && usec != u64::MAX).then(|| (usec / 1_000_000) as i64);
+        let next = proxy
+            .get_property::<u64>("NextElapseUSecRealtime")
+            .await
+            .ok()
+            .and_then(to_secs);
+        let last = proxy
+            .get_property::<u64>("LastTriggerUSec")
+            .await
+            .ok()
+            .and_then(to_secs);
+        Some(Schedule {
+            next_run: next,
+            last_run: last,
+        })
+    }
+}
+
+/// Mapeia o `active_state` do systemd para o nosso [`JobState`].
+fn map_state(active_state: &str) -> JobState {
+    match active_state {
+        "active" => JobState::Active,
+        "inactive" => JobState::Inactive,
+        "failed" => JobState::Failed,
+        "activating" => JobState::Activating,
+        "deactivating" => JobState::Deactivating,
+        _ => JobState::Unknown,
+    }
+}
+
+/// Deriva saúde de alto nível a partir do estado. Mantém a leitura calma:
+/// inativo não é alarme (timers e oneshots vivem inativos).
+fn map_health(state: JobState) -> Health {
+    match state {
+        JobState::Failed => Health::Failed,
+        JobState::Activating | JobState::Deactivating => Health::Degraded,
+        _ => Health::Ok,
+    }
+}
+
+#[async_trait]
+impl JobProvider for SystemdUserProvider {
+    fn id(&self) -> &'static str {
+        PROVIDER_ID
+    }
+
+    async fn available(&self) -> bool {
+        self.manager().await.is_ok()
+    }
+
+    async fn list(&self) -> Result<Vec<Job>> {
+        let mgr = self.manager().await?;
+
+        // Mapa nome→estado-do-arquivo para descobrir o autostart (enabled).
+        let enabled_map: HashMap<String, String> = mgr
+            .list_unit_files()
+            .await?
+            .into_iter()
+            .filter_map(|(path, state)| {
+                let name = path.rsplit('/').next()?.to_string();
+                Some((name, state))
+            })
+            .collect();
+
+        let units = mgr.list_units().await?;
+        let mut jobs = Vec::new();
+
+        for u in units {
+            let name = u.0;
+            let kind = if name.ends_with(".service") {
+                JobKind::Service
+            } else if name.ends_with(".timer") {
+                JobKind::Scheduled
+            } else {
+                continue; // v1: só services e timers
+            };
+
+            let state = map_state(&u.3);
+            let enabled = enabled_map
+                .get(&name)
+                .map(|s| s == "enabled")
+                .unwrap_or(false);
+
+            let schedule = if kind == JobKind::Scheduled {
+                self.read_schedule(&name).await
+            } else {
+                None
+            };
+
+            jobs.push(Job {
+                id: Job::global_id(PROVIDER_ID, &name),
+                provider: PROVIDER_ID.to_string(),
+                local_id: name.clone(),
+                kind,
+                name,
+                description: u.1,
+                command: None, // preenchido sob demanda (ExecStart) em incremento futuro
+                state,
+                enabled,
+                schedule,
+                resources: Resources::default(), // recursos vêm via metrics(), sob demanda
+                health: map_health(state),
+            });
+        }
+
+        jobs.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(jobs)
+    }
+
+    async fn control(&self, local_id: &str, action: Action) -> Result<()> {
+        let mgr = self.manager().await?;
+        match action {
+            Action::Start => {
+                mgr.start_unit(local_id, "replace").await?;
+            }
+            Action::Stop => {
+                mgr.stop_unit(local_id, "replace").await?;
+            }
+            Action::Restart => {
+                mgr.restart_unit(local_id, "replace").await?;
+            }
+            Action::Enable => {
+                mgr.enable_unit_files(&[local_id], false, false).await?;
+            }
+            Action::Disable => {
+                mgr.disable_unit_files(&[local_id], false).await?;
+            }
+            Action::TriggerNow => {
+                // Para um timer, dispara o .service correspondente; para um service, é Start.
+                let target = if let Some(stem) = local_id.strip_suffix(".timer") {
+                    format!("{stem}.service")
+                } else {
+                    local_id.to_string()
+                };
+                mgr.start_unit(&target, "replace").await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn metrics(&self, local_id: &str) -> Result<Resources> {
+        if !self.available().await {
+            return Err(Error::Unavailable(PROVIDER_ID.into()));
+        }
+        Ok(self.read_resources(local_id).await)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Smoke test ao vivo contra o systemd --user real desta máquina.
+    /// Ignorado por padrão (CI pode não ter session bus). Rode com:
+    /// `cargo test -- --ignored systemd_live`
+    #[tokio::test]
+    #[ignore]
+    async fn systemd_live_lists_units() {
+        let provider = SystemdUserProvider::connect()
+            .await
+            .expect("conectar ao session bus");
+        assert!(provider.available().await);
+        let jobs = provider.list().await.expect("listar units");
+        eprintln!("--- {} jobs do systemd --user ---", jobs.len());
+        for j in jobs.iter().take(40) {
+            eprintln!(
+                "{:?} {:<40} state={:?} enabled={} sched={:?}",
+                j.kind, j.name, j.state, j.enabled, j.schedule
+            );
+        }
+        assert!(!jobs.is_empty(), "deveria haver ao menos uma user-unit");
+    }
+}
