@@ -49,7 +49,7 @@ pub fn run() {
             if let Err(e) = setup_tray(app) {
                 tracing::warn!(error = %e, "tray indisponível (falta libayatana-appindicator?)");
             }
-            setup_minimize_to_tray(app);
+            setup_close_to_tray(app);
             // Loops de estado/métricas (push para a UI).
             crate::core::events::spawn(registry.clone(), app.handle().clone());
             Ok(())
@@ -97,24 +97,17 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Fechar (✕) ou minimizar escondem a janela para a bandeja em vez de encerrar.
-/// O app só sai de fato pelo "Sair" no menu da bandeja.
-fn setup_minimize_to_tray(app: &tauri::App) {
+/// Fechar (✕) esconde a janela para a bandeja em vez de encerrar; o app só sai
+/// de fato pelo "Sair" no menu da bandeja. Minimizar mantém o comportamento
+/// normal do sistema (vai para o dock/barra de tarefas).
+fn setup_close_to_tray(app: &tauri::App) {
     if let Some(window) = app.get_webview_window("main") {
         let w = window.clone();
-        window.on_window_event(move |event| match event {
-            // Intercepta o fechar: não encerra, só esconde para a bandeja.
-            WindowEvent::CloseRequested { api, .. } => {
+        window.on_window_event(move |event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = w.hide();
             }
-            // Minimizar também recolhe para a bandeja (some da barra de tarefas).
-            WindowEvent::Resized(_) => {
-                if w.is_minimized().unwrap_or(false) {
-                    let _ = w.hide();
-                }
-            }
-            _ => {}
         });
     }
 }
