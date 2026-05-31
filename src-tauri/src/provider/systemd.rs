@@ -58,6 +58,24 @@ trait Manager {
         files: &[&str],
         runtime: bool,
     ) -> zbus::Result<Vec<(String, String, String)>>;
+
+    /// Habilita a emissão de sinais (UnitNew/JobRemoved/…) neste cliente.
+    fn subscribe(&self) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    fn job_removed(
+        &self,
+        id: u32,
+        job: OwnedObjectPath,
+        unit: String,
+        result: String,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    fn unit_new(&self, id: String, unit: OwnedObjectPath) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    fn unit_removed(&self, id: String, unit: OwnedObjectPath) -> zbus::Result<()>;
 }
 
 /// Provider de user-services e user-timers do systemd.
@@ -294,6 +312,45 @@ impl JobProvider for SystemdUserProvider {
             return Err(Error::Unavailable(PROVIDER_ID.into()));
         }
         Ok(self.read_resources(local_id).await)
+    }
+
+    async fn watch(&self) -> Option<crate::provider::ChangeStream> {
+        use futures_util::StreamExt;
+
+        let conn = self.conn.clone();
+        let (tx, rx) = tokio::sync::mpsc::channel::<()>(16);
+
+        // Task dedicada possui o proxy e os streams de sinal (mantém tudo 'static).
+        tokio::spawn(async move {
+            let Ok(mgr) = ManagerProxy::new(&conn).await else {
+                return;
+            };
+            if mgr.subscribe().await.is_err() {
+                return;
+            }
+            let (mut jr, mut un, mut ur) = match tokio::try_join!(
+                mgr.receive_job_removed(),
+                mgr.receive_unit_new(),
+                mgr.receive_unit_removed(),
+            ) {
+                Ok(streams) => streams,
+                Err(_) => return,
+            };
+
+            loop {
+                let changed = tokio::select! {
+                    s = jr.next() => s.is_some(),
+                    s = un.next() => s.is_some(),
+                    s = ur.next() => s.is_some(),
+                    else => false,
+                };
+                if !changed || tx.send(()).await.is_err() {
+                    break; // conexão caiu ou ninguém escutando mais
+                }
+            }
+        });
+
+        Some(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
     }
 }
 

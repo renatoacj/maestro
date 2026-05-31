@@ -2,7 +2,7 @@
 
 use crate::error::{Error, Result};
 use crate::model::{Action, Job, Resources};
-use crate::provider::JobProvider;
+use crate::provider::{ChangeStream, JobProvider};
 
 pub struct Registry {
     providers: Vec<Box<dyn JobProvider>>,
@@ -49,6 +49,17 @@ impl Registry {
     pub async fn metrics(&self, global_id: &str) -> Result<Resources> {
         let (provider, local_id) = self.route(global_id)?;
         provider.metrics(&local_id).await
+    }
+
+    /// Streams de mudança de todos os providers que suportam push.
+    pub async fn watch_streams(&self) -> Vec<ChangeStream> {
+        let mut streams = Vec::new();
+        for p in &self.providers {
+            if let Some(s) = p.watch().await {
+                streams.push(s);
+            }
+        }
+        streams
     }
 }
 

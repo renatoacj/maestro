@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import {
     listJobs,
     controlJob,
-    jobMetrics,
     type Job,
     type Action,
     type Health,
@@ -73,34 +73,16 @@
       }),
   );
 
-  async function refresh() {
+  // Carga inicial; depois o estado chega por eventos do backend (sem polling).
+  async function reload() {
     try {
       jobs = await listJobs();
       error = null;
-      void refreshMetrics();
     } catch (e) {
       error = String(e);
     } finally {
       loaded = true;
     }
-  }
-
-  // Métricas (CPU/memória) só fazem sentido para jobs ativos. Buscadas em
-  // paralelo; o CPU% precisa de duas amostras, então aparece a partir do 2º ciclo.
-  async function refreshMetrics() {
-    const active = jobs.filter((j) => j.state === "active");
-    const entries = await Promise.all(
-      active.map(async (j) => {
-        try {
-          return [j.id, await jobMetrics(j.id)] as const;
-        } catch {
-          return [j.id, null] as const;
-        }
-      }),
-    );
-    const next: Record<string, Resources> = {};
-    for (const [id, r] of entries) if (r) next[id] = r;
-    metrics = next;
   }
 
   // Ponto de entrada dos botões: pede confirmação nas ações que executam algo.
@@ -124,7 +106,7 @@
     busy = new Set(busy).add(job.id);
     try {
       await controlJob(job.id, action);
-      await refresh();
+      await reload(); // feedback imediato; o evento `jobs` também confirmará
     } catch (e) {
       error = String(e);
     } finally {
@@ -134,12 +116,23 @@
     }
   }
 
-  let timer: ReturnType<typeof setInterval>;
-  onMount(() => {
-    refresh();
-    timer = setInterval(refresh, 4000);
+  // Push do backend: `jobs` (mudança de estado) e `metrics` (CPU/mem a cada 2s).
+  let unlisten: UnlistenFn[] = [];
+  onMount(async () => {
+    await reload();
+    unlisten.push(
+      await listen<Job[]>("jobs", (e) => {
+        jobs = e.payload;
+        loaded = true;
+      }),
+    );
+    unlisten.push(
+      await listen<Record<string, Resources>>("metrics", (e) => {
+        metrics = e.payload;
+      }),
+    );
   });
-  onDestroy(() => clearInterval(timer));
+  onDestroy(() => unlisten.forEach((u) => u()));
 </script>
 
 <div class="app">

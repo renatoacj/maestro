@@ -9,6 +9,8 @@ mod ipc;
 mod model;
 mod provider;
 
+use std::sync::Arc;
+
 use crate::core::registry::Registry;
 use crate::provider::systemd::SystemdUserProvider;
 use crate::provider::JobProvider;
@@ -29,23 +31,25 @@ pub fn run() {
         .init();
 
     // Descobre os providers disponíveis nesta máquina antes de subir a UI.
-    let registry = tauri::async_runtime::block_on(build_registry());
+    let registry = Arc::new(tauri::async_runtime::block_on(build_registry()));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(registry)
+        .manage(registry.clone())
         .invoke_handler(tauri::generate_handler![
             ipc::list_jobs,
             ipc::control_job,
             ipc::job_metrics,
         ])
-        .setup(|app| {
+        .setup(move |app| {
             // Tray é não-fatal: se a libayatana-appindicator não estiver presente,
             // o app continua funcionando normalmente, apenas sem ícone na bandeja.
             if let Err(e) = setup_tray(app) {
                 tracing::warn!(error = %e, "tray indisponível (falta libayatana-appindicator?)");
             }
             setup_minimize_to_tray(app);
+            // Loops de estado/métricas (push para a UI).
+            crate::core::events::spawn(registry.clone(), app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

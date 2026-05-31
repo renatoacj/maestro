@@ -5,11 +5,18 @@
 //! sem tocar no núcleo. É isso que torna o "universal cross-platform" um incremento
 //! e não uma reescrita.
 
+use std::pin::Pin;
+
 use crate::error::Result;
 use crate::model::{Action, Job, Resources};
 use async_trait::async_trait;
+use futures_util::Stream;
 
 pub mod systemd;
+
+/// Stream de "algo mudou" empurrado por um provider (sem payload — sinaliza que
+/// vale relistar). `'static` para poder viver numa task de background.
+pub type ChangeStream = Pin<Box<dyn Stream<Item = ()> + Send>>;
 
 #[cfg(test)]
 pub mod fake;
@@ -36,4 +43,10 @@ pub trait JobProvider: Send + Sync {
 
     /// Lê o consumo de recursos atual de um job (id local).
     async fn metrics(&self, local_id: &str) -> Result<Resources>;
+
+    /// Stream opcional de mudanças (push). `None` se o provider não suporta —
+    /// nesse caso o núcleo cai para amostragem periódica.
+    async fn watch(&self) -> Option<ChangeStream> {
+        None
+    }
 }
