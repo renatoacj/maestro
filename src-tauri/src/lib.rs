@@ -124,7 +124,15 @@ async fn build_registry() -> Registry {
         Err(e) => tracing::warn!(error = %e, "systemd --user indisponível"),
     }
 
-    // Próximos incrementos: DockerProvider, CronProvider, …
+    match crate::provider::docker::DockerProvider::connect().await {
+        Ok(p) => {
+            tracing::info!("provider docker conectado");
+            providers.push(Box::new(p));
+        }
+        Err(e) => tracing::debug!(error = %e, "docker indisponível (ok se não usa Docker)"),
+    }
+
+    // Próximos incrementos: CronProvider, LaunchdProvider, WindowsProvider…
 
     Registry::new(providers)
 }

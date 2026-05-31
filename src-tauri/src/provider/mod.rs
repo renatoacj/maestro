@@ -12,6 +12,7 @@ use crate::model::{Action, Job, JobDetail, Resources};
 use async_trait::async_trait;
 use futures_util::Stream;
 
+pub mod docker;
 pub mod systemd;
 
 /// Stream de "algo mudou" empurrado por um provider (sem payload — sinaliza que
