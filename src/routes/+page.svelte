@@ -127,6 +127,8 @@
       }),
   );
 
+  let refreshing = $state(false);
+
   // Carga inicial; depois o estado chega por eventos do backend (sem polling).
   async function reload() {
     try {
@@ -137,6 +139,13 @@
     } finally {
       loaded = true;
     }
+  }
+
+  async function manualRefresh() {
+    refreshing = true;
+    await reload();
+    // breve feedback visual mesmo que a lista volte instantânea
+    setTimeout(() => (refreshing = false), 350);
   }
 
   // Ponto de entrada dos botões: pede confirmação nas ações que executam algo.
@@ -332,6 +341,13 @@
 
   <div class="toolbar">
     <input class="search" placeholder="Buscar serviço…" bind:value={query} />
+    <button
+      class="kbd-btn refresh"
+      class:spin={refreshing}
+      onclick={manualRefresh}
+      title="Atualizar agora"
+      aria-label="Atualizar"
+    >↻</button>
     <button class="kbd-btn" onclick={openPalette} title="Paleta de comandos (⌘K)">⌘K</button>
     <div class="chips">
       {#each [["all", "Todos"], ["failed", "Falhas"], ["active", "Ativos"], ["scheduled", "Agendados"]] as [key, label]}
@@ -851,6 +867,23 @@
   .kbd-btn:hover {
     color: var(--text);
     border-color: var(--line-strong);
+  }
+  .kbd-btn.refresh {
+    font-size: 15px;
+    line-height: 1;
+    padding: 8px 10px;
+  }
+  .kbd-btn.refresh.spin {
+    animation: spin 0.6s ease;
+    color: var(--accent);
+  }
+  @keyframes spin {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   /* --- Paleta de comandos --- */

@@ -91,6 +91,11 @@ fn spawn_sampler(registry: Arc<Registry>, app: AppHandle) {
                 continue;
             }
             let jobs = registry.list_all().await;
+            // Rede de segurança: re-emite a lista a cada ciclo. Garante que mudanças
+            // que não dispararam um sinal do systemd (unit nova no disco, daemon-reload)
+            // apareçam em ≤2s, somado ao push instantâneo do watcher.
+            let _ = app.emit(JOBS_EVENT, &jobs);
+
             let mut map: HashMap<String, crate::model::Resources> = HashMap::new();
             for j in jobs.iter().filter(|j| matches!(j.state, JobState::Active)) {
                 if let Ok(r) = registry.metrics(&j.id).await {
